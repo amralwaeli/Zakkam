@@ -5,6 +5,7 @@ import { ApartmentsList } from './components/ApartmentsList';
 import { ApartmentForm } from './components/ApartmentForm';
 import { ApartmentDetail } from './components/ApartmentDetail';
 import type { Apartment } from './types';
+import { supabase } from '../lib/supabaseClient';
 
 const STORAGE_KEY = 'rental-management-apartments-v2';
 const AUTH_KEY = 'rental-management-auth';
@@ -15,6 +16,99 @@ function AppContent() {
   const [showForm, setShowForm] = useState(false);
   const [editingApartment, setEditingApartment] = useState<Apartment | undefined>();
   const [selectedApartment, setSelectedApartment] = useState<Apartment | undefined>();
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const migrateStoredApartments = (stored: string) => {
+    try {
+      const data = JSON.parse(stored);
+      return data.map((apt: any) => ({
+        id: apt.id,
+        name: apt.name || '',
+        totalRent: apt.totalRent || apt.monthlyRent || apt.rooms?.reduce((sum: number, r: any) => sum + (r.rent || 0), 0) || 0,
+        paymentDueDayStart: apt.paymentDueDayStart || 1,
+        paymentDueDayEnd: apt.paymentDueDayEnd || 5,
+        rooms: (apt.rooms || []).map((r: any) => ({
+          id: r.id,
+          name: r.name || '',
+          rent: r.rent || 0,
+          tenantName: r.tenantName,
+        })),
+        payments: (apt.payments || []).map((p: any) => {
+          if (p.roomPayments) {
+            return p;
+          }
+          return {
+            id: p.id,
+            month: p.paymentDate?.substring(0, 7) || new Date().toISOString().substring(0, 7),
+            paymentDate: p.paymentDate || new Date().toISOString().split('T')[0],
+            roomPayments: [],
+            notes: p.notes,
+          };
+        }),
+        utilityBills: (apt.utilityBills || []).map((b: any) => ({
+          ...b,
+          isPaid: b.isPaid || false,
+          hasDiscrepancy: b.hasDiscrepancy || false,
+          amountPaid: b.amountPaid || 0,
+          amountRemaining: b.amountRemaining || b.amount || 0,
+        })),
+      })) as Apartment[];
+    } catch (e) {
+      console.error('Failed to migrate stored apartments:', e);
+      return [];
+    }
+  };
+
+  const loadApartments = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    const { data, error } = await supabase
+      .from('apartments')
+      .select('id,data');
+
+    if (error) {
+      console.error('Supabase read error:', error);
+      setErrorMessage('تعذر تحميل البيانات من Supabase؛ يتم استخدام نسخة محلية احتياطية إذا كانت متوفرة.');
+
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        setApartments(migrateStoredApartments(stored));
+      }
+    } else if (data) {
+      setApartments(
+        data.map((row: any) => ({
+          ...row.data,
+          id: row.id,
+        })) as Apartment[]
+      );
+    }
+
+    setIsLoading(false);
+  };
+
+  const saveApartmentToSupabase = async (apartment: Apartment) => {
+    const { error } = await supabase
+      .from('apartments')
+      .upsert(
+        { id: apartment.id, data: apartment },
+        { returning: 'minimal' }
+      );
+
+    if (error) {
+      console.error('Supabase save error:', error);
+      setErrorMessage('فشل حفظ البيانات إلى Supabase. ستبقى التغييرات محلية مؤقتاً.');
+    }
+  };
+
+  const deleteApartmentFromSupabase = async (id: string) => {
+    const { error } = await supabase.from('apartments').delete().eq('id', id);
+    if (error) {
+      console.error('Supabase delete error:', error);
+      setErrorMessage('فشل حذف السجل من Supabase. التغيير محلي فقط.');
+    }
+  };
 
   useEffect(() => {
     const authStored = localStorage.getItem(AUTH_KEY);
@@ -25,48 +119,7 @@ function AppContent() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        const data = JSON.parse(stored);
-        const migratedData = data.map((apt: any) => ({
-          id: apt.id,
-          name: apt.name || '',
-          totalRent: apt.totalRent || apt.monthlyRent || apt.rooms?.reduce((sum: number, r: any) => sum + (r.rent || 0), 0) || 0,
-          paymentDueDayStart: apt.paymentDueDayStart || 1,
-          paymentDueDayEnd: apt.paymentDueDayEnd || 5,
-          rooms: (apt.rooms || []).map((r: any) => ({
-            id: r.id,
-            name: r.name || '',
-            rent: r.rent || 0,
-            tenantName: r.tenantName,
-          })),
-          payments: (apt.payments || []).map((p: any) => {
-            if (p.roomPayments) {
-              return p;
-            }
-            return {
-              id: p.id,
-              month: p.paymentDate?.substring(0, 7) || new Date().toISOString().substring(0, 7),
-              paymentDate: p.paymentDate || new Date().toISOString().split('T')[0],
-              roomPayments: [],
-              notes: p.notes,
-            };
-          }),
-          utilityBills: (apt.utilityBills || []).map((b: any) => ({
-            ...b,
-            isPaid: b.isPaid || false,
-            hasDiscrepancy: b.hasDiscrepancy || false,
-            amountPaid: b.amountPaid || 0,
-            amountRemaining: b.amountRemaining || b.amount || 0,
-          })),
-        }));
-        setApartments(migratedData);
-      } catch (e) {
-        console.error('Failed to load apartments:', e);
-      }
-    }
+    loadApartments();
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -100,37 +153,53 @@ function AppContent() {
     );
   }
 
-  const handleSaveApartment = (apartment: Omit<Apartment, 'id'> & { id?: string }) => {
-    if (apartment.id) {
-      setApartments((prev) =>
-        prev.map((apt) => (apt.id === apartment.id ? { ...apartment, id: apartment.id } : apt))
-      );
-      if (selectedApartment?.id === apartment.id) {
-        setSelectedApartment({ ...apartment, id: apartment.id } as Apartment);
-      }
-    } else {
-      setApartments((prev) => [...prev, { ...apartment, id: Date.now().toString() }]);
+  if (isLoading) {
+    return (
+      <>
+        <Helmet>
+          <title>جارٍ تحميل الشقق...</title>
+        </Helmet>
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-700" dir="rtl">
+          <p className="rounded-lg bg-white p-6 shadow-md">جارٍ تحميل البيانات من Supabase...</p>
+        </div>
+      </>
+    );
+  }
+
+  const handleSaveApartment = async (apartment: Omit<Apartment, 'id'> & { id?: string }) => {
+    const apartmentWithId: Apartment = apartment.id
+      ? ({ ...apartment, id: apartment.id } as Apartment)
+      : ({ ...apartment, id: Date.now().toString() } as Apartment);
+
+    setApartments((prev) =>
+      prev.some((apt) => apt.id === apartmentWithId.id)
+        ? prev.map((apt) => (apt.id === apartmentWithId.id ? apartmentWithId : apt))
+        : [...prev, apartmentWithId]
+    );
+
+    if (selectedApartment?.id === apartmentWithId.id) {
+      setSelectedApartment(apartmentWithId);
     }
+
     setShowForm(false);
     setEditingApartment(undefined);
+    await saveApartmentToSupabase(apartmentWithId);
   };
 
-  const handleDeleteApartment = (id: string) => {
+  const handleDeleteApartment = async (id: string) => {
     setApartments((prev) => prev.filter((apt) => apt.id !== id));
     if (selectedApartment?.id === id) {
       setSelectedApartment(undefined);
     }
+    await deleteApartmentFromSupabase(id);
   };
 
-  const handleUpdateApartment = (updatedApartment: Apartment) => {
-    setApartments((prev) =>
-      prev.map((apt) => (apt.id === updatedApartment.id ? updatedApartment : apt))
+  const handleUpdateApartment = async (updatedApartment: Apartment) => {
+    setApartments((prev) => prev.map((apt) => (apt.id === updatedApartment.id ? updatedApartment : apt)));
+    setSelectedApartment((current) =>
+      current?.id === updatedApartment.id ? updatedApartment : current
     );
-    // Update the selected apartment to reflect changes
-    const updatedInList = apartments.find(a => a.id === updatedApartment.id);
-    if (updatedInList) {
-      setSelectedApartment(updatedApartment);
-    }
+    await saveApartmentToSupabase(updatedApartment);
   };
 
   if (selectedApartment) {
@@ -159,6 +228,12 @@ function AppContent() {
         <title>نظام إدارة الشقق</title>
       </Helmet>
       <div className="min-h-screen bg-gray-50">
+        {errorMessage && (
+          <div className="mx-4 mt-4 rounded-lg border border-yellow-300 bg-yellow-100 p-3 text-sm text-yellow-900" dir="rtl">
+            {errorMessage}
+          </div>
+        )}
+
         <ApartmentsList
           apartments={apartments}
           onAdd={() => setShowForm(true)}
