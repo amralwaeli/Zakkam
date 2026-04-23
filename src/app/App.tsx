@@ -262,15 +262,17 @@ function AppContent() {
 }
 
 export default function App() {
+  const assetBase = import.meta.env.BASE_URL;
+
   return (
     <HelmetProvider>
       <Helmet>
         <html lang="ar" dir="rtl" />
         <meta name="description" content="نظام إدارة الشقق والإيجارات - تتبع المدفوعات والخدمات" />
         <meta name="theme-color" content="#2563eb" />
-        <link rel="icon" type="image/jpeg" href="/logo.jpg" />
-        <link rel="apple-touch-icon" href="/logo.jpg" />
-        <link rel="manifest" href="/manifest.json" />
+        <link rel="icon" type="image/jpeg" href={`${assetBase}logo.jpg`} />
+        <link rel="apple-touch-icon" href={`${assetBase}logo.jpg`} />
+        <link rel="manifest" href={`${assetBase}manifest.json`} />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="إدارة الشقق" />
