@@ -111,10 +111,8 @@ function AppContent() {
   };
 
   useEffect(() => {
-    const authStored = localStorage.getItem(AUTH_KEY);
-    if (authStored === 'true') {
-      setIsAuthenticated(true);
-    }
+    // Always require PIN on page load — do not restore auth from localStorage
+    localStorage.removeItem(AUTH_KEY);
   }, []);
 
   useEffect(() => {
@@ -130,7 +128,6 @@ function AppContent() {
 
   const handleLogin = () => {
     setIsAuthenticated(true);
-    localStorage.setItem(AUTH_KEY, 'true');
   };
 
   const handleLogout = () => {
